@@ -54,7 +54,6 @@ class QTLayer(Layer):
         self.built = True
 
     def call(self, x, mode='q_sa'):
-        print(x)
         if mode == 'q_sa':
             states, actions = x
             reshaped_s = tf.reshape(states, (-1, np.prod(self.state_shape)))
