@@ -8,18 +8,13 @@ from tensorflow.python.keras.layers import Layer, Lambda, Input, Reshape
 def tf_dynamic_stack(x, y):
     shape = x.get_shape().as_list()
     tmp = tf.reshape(x, (-1, ))
-
     tile = tf.tile(tmp, tf.shape(y)[0:1])
-
     return tf.reshape(tile, [tf.shape(y)[0]] + shape)
 
 
 def gather_nd_partial(tt, indices, full=True):
-    #print (indices)
     tt_elements = tf.ones(tf.shape(indices)[0], dtype=tt.dtype)
-    #print (tt_elements)
     tt_elements = tf.reshape(tt_elements, (-1, 1, 1))
-
     ind_shape = indices.get_shape().as_list()
 
     for core_idx in range(ind_shape[1]):
@@ -34,7 +29,6 @@ def gather_nd_partial(tt, indices, full=True):
 
     for i in range(1, len(remaining_cores)):
         cores.append(tf_dynamic_stack(remaining_cores[i]), indices)
-        #cores.append(tf.stack( * [remaining_cores[i]], axis=0))
     slice_batch = t3f.TensorTrainBatch(cores)
     if full:
         return t3f.full(slice_batch)
@@ -72,25 +66,8 @@ class QTLayer(Layer):
         elif mode == 'q_s':
             states = x
             reshaped_s = tf.reshape(states, (-1, np.prod(self.state_shape)))
-            # s_a_idx = tf.concat(self.part_size * [reshaped_s], axis=0)
-            # actions_range = tf.range(start=0, limit=self.part_size)
-            # a_idx = self.tf_repeat(actions_range, tf.shape(states)[0:1])
-            # s_a_idx = tf.concat([s_a_idx, a_idx], axis=1)
-            # vals = t3f.gather_nd(self.Q, s_a_idx)
-            # q_values_s = tf.transpose(tf.reshape(vals, shape=(self.part_size, -1)))
-
             q_values_s = gather_nd_partial(self.Q, reshaped_s)
             return q_values_s
-
-    # def tf_repeat(self, x, num):
-    #     u = tf.reshape(x, (-1, 1))
-    #     ones = tf.ones(1, dtype=tf.int32)
-    #     u = tf.tile(u, tf.concat([ones, num], axis=0))
-    #     u = tf.reshape(u, (-1, 1))
-    #     return u
-
-
-
 
     def compute_output_shape(self, input_shape):
         return input_shape
