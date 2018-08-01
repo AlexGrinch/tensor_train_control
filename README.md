@@ -1,2 +1,2 @@
-# gaussian_rl
-NIPS 2018 marathon project
+#  Tensor Train Control
+AAAI 2019 marathon project
