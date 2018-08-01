@@ -56,21 +56,28 @@ class QTLayer(Layer):
 
 class QQTTCriticNetwork:
     
-    def __init__(self, state_shape, action_size, tt_rank, 
-                 partition_size=64, scope=None):
+    def __init__(self, state_shape, action_size,
+                 state_bound, action_bound,
+                 tt_rank, partition_size=64, scope=None):
+        """
+        state_bound = (state_low, state_high)
+        action_bound = (action_low, action_high)
+        """
         self.state_shape = state_shape
         self.action_size = action_size
+        self.state_bound = state_bound
+        self.action_bound = action_bound
         self.tt_rank = tt_rank
         self.part_size = partition_size
         self.scope = scope or 'QQttCriticNetwork'
         self.input_shape = (partition_size, ) * (state_shape[0] + 1)
-        
-        self.state_low = tf.constant([-1., -1., -8.])
-        self.state_high = tf.constant([1., 1., 8.])
+
+        self.state_low = tf.constant(self.state_bound[0])
+        self.state_high = tf.constant(self.state_bound[1])
         self.state_step = (self.state_high - self.state_low) / (self.part_size - 1)
-        
-        self.action_low = tf.constant([-2.])
-        self.action_high = tf.constant([2.])
+
+        self.action_low = tf.constant(self.action_bound[0])
+        self.action_high = tf.constant(self.action_bound[1])
         self.action_step = (self.action_high - self.action_low) / (self.part_size - 1)
 
         self.model_critic, self.model_actor = self.build_models()
@@ -148,6 +155,8 @@ class QQTTCriticNetwork:
         with tf.variable_scope(scope):
             return QQTTCriticNetwork(state_shape=self.state_shape,
                                      action_size=self.action_size,
+                                     state_bound=self.state_bound,
+                                     action_bound=self.action_bound,
                                      tt_rank=self.tt_rank,
                                      partition_size=self.part_size,
                                      scope=scope)

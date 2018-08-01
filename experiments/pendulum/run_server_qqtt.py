@@ -34,8 +34,12 @@ os.environ["CUDA_VISIBLE_DEVICES"] = str(C.gpu_id)
 observation_shapes = [(C.obs_size,)]
 state_shapes = [(C.history_len, C.obs_size,)]
 
-critic = QQTTCriticNetwork(state_shapes[0], C.action_size, tt_rank=6,
-                           partition_size=128, scope='critic')
+state_bound = ([-1., -1., -8.], [1., 1., 8.])
+action_bound = ([-2.], [2.])
+
+critic = QQTTCriticNetwork(state_shapes[0], C.action_size,
+                           state_bound, action_bound,
+                           tt_rank=6, partition_size=64, scope='critic')
 
 def model_load_callback(sess, saver):
     pass
