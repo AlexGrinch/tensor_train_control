@@ -1,3 +1,3 @@
-# Tensor Train Control
+# Explaining Distributional RL with Tensor Train Decomposition
 
-AAAI 2019 marathon project led by Oleksii Hrinchuk and Valentin Khrulkov under gentle supervision of Professor Ivan Oseledets.
+NeurIPS 2019 marathon project led by Oleksii Hrinchuk and Valentin Khrulkov under gentle and wise supervision of Professor Ivan Oseledets.
