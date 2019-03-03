@@ -11,27 +11,33 @@ class WindyGridWorld:
             grid_size=(11, 14),
             stochasticity=0.1,
             visual=False):
+        """
+        Simple WindyGridWorld environment from https://arxiv.org/abs/1710.10044
+
+        Parameters
+        ----------
+        grid_size: tuple of two ints (W, H)
+            size of the GridWorld, W should be odd and H = W + 3
+        stochasticity: float from [0, 1]
+            probability to select random action instead of intended
+        visual: bool
+            if True, the states will be images
+        """
         self.w, self.h = grid_size
         self.stochasticity = stochasticity
         self.visual = visual
-
-        # x position of the wall
-        self.x_wall = self.w // 2
-        # y position of the hole in the wall
-        self.y_hole = self.h - 4
-
+        self.x_wall = self.w // 2  # x position of the wll
+        self.y_hole = self.h - 4  # y position of the hole in the wall
         self.reset()
 
     def clip_xy(self, x, y):
-        """ clip coordinates if they go beyond the grid
-        """
+        """clip coordinates if they go beyond the grid"""
         x_ = np.clip(x, 0, self.w - 1)
         y_ = np.clip(y, 0, self.h - 1)
         return x_, y_
 
     def wind_shift(self, x, y):
-        """ apply wind shift to areas where wind is blowing
-        """
+        """apply wind shift to areas where wind is blowing"""
         if x == 1:
             return self.clip_xy(x, y + 1)
         elif x > 1 and x < self.x_wall:
@@ -40,10 +46,9 @@ class WindyGridWorld:
             return x, y
 
     def move(self, a):
-        """ find valid coordinates of the agent after executing action
-        """
+        """find valid coordinates of the agent after executing action"""
+
         x, y = self.pos
-        self.field[x, y] = 0
         x, y = self.wind_shift(x, y)
 
         if a == 0:
@@ -68,8 +73,7 @@ class WindyGridWorld:
         return obs
 
     def reset(self):
-        """ resets the environment
-        """
+        """reset the environment"""
         self.field = np.zeros((self.w, self.h))
         self.field[self.x_wall, :] = 1
         self.field[self.x_wall, self.y_hole] = 0
@@ -79,8 +83,7 @@ class WindyGridWorld:
         return obs
 
     def step(self, a):
-        """ makes a step in the environment
-        """
+        """make a step in the environment"""
 
         if np.random.rand() < self.stochasticity:
             a = np.random.randint(4)
@@ -89,20 +92,22 @@ class WindyGridWorld:
         self.pos = self.move(a)
         self.field[self.pos] = 2
 
-        done = False
-        reward = 0
-        if self.pos == (self.w - 1, 0):
-            # episode finished successfully
-            done = True
-            reward = 1
+        reward, done = self.get_reward_done()
         next_obs = self.get_observation()
         return next_obs, reward, done
 
+    def get_reward_done(self):
+        """get reward and one indicator"""
+        if self.pos == (self.w - 1, 0):
+            reward = 1
+            done = True
+        else:
+            reward = 0
+            done = False
+        return reward, done
+
     def play_with_policy(self, policy, max_iter=100, visualize=True):
-        """ play with given policy
-            returns:
-                episode return, number of time steps
-        """
+        """play with given policy, returns return and number of time steps"""
         self.reset()
         for i in range(max_iter):
             a = np.argmax(policy[self.pos])

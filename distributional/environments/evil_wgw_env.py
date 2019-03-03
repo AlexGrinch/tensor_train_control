@@ -9,21 +9,33 @@ class EvilWindyGridWorld(WindyGridWorld):
             grid_size=(7, 10),
             stochasticity=0.1,
             visual=False):
+        """
+        Evil WindyGridWorld environment which has an additional hole in
+        the wall and two traps with a reward of -1. Optimal policy now
+        depends on stochasticity: if stoc < 0.04, the optimal policy is
+        going through the bottom hole; otherwise, the optimal policy is
+        going through the top hole.
+
+        Parameters
+        ----------
+        grid_size: tuple of two ints (W, H)
+            size of the GridWorld, W should be odd and H = W + 3
+        stochasticity: float from [0, 1]
+            probability to select random action instead of intended
+        visual: bool
+            if True, the states will be images
+        """
         self.w, self.h = grid_size
         self.stochasticity = stochasticity
         self.visual = visual
-
-        # x position of the wall
-        self.x_wall = self.w // 2
-        # y position of the hole in the wall
-        self.y_hole = self.h - 4
-        self.y_hole2 = self.h - 7
-
+        self.x_wall = self.w // 2  # x position of the wll
+        self.y_hole = self.h - 4  # y position of the hole in the wall
+        self.y_hole2 = self.h - 7  # y position of the second hole
         self.reset()
 
     def move(self, a):
-        """ find valid coordinates of the agent after executing action
-        """
+        """find valid coordinates of the agent after executing action"""
+
         x, y = self.pos
         x, y = self.wind_shift(x, y)
 
@@ -42,8 +54,7 @@ class EvilWindyGridWorld(WindyGridWorld):
         return self.clip_xy(x_, y_)
 
     def reset(self):
-        """ resets the environment
-        """
+        """reset the environment"""
         self.field = np.zeros((self.w, self.h))
         self.field[self.x_wall, :] = 1
         self.field[self.x_wall, self.y_hole] = 0
@@ -55,40 +66,24 @@ class EvilWindyGridWorld(WindyGridWorld):
         obs = self.get_observation()
         return obs
 
-    def step(self, a):
-        """ makes a step in the environment
-        """
-
-        if np.random.rand() < self.stochasticity:
-            a = np.random.randint(4)
-
-        self.field[self.pos] = 0
-        self.pos = self.move(a)
-        self.field[self.pos] = 2
-
-        done = False
-        reward = 0
-        if self.pos == (self.w - 1, 0):
-            # episode finished successfully
-            done = True
-            reward = 1
+    def get_reward_done(self):
+        """get reward and one indicator"""
+        reward, done = super(EvilWindyGridWorld, self).get_reward_done()
         if (self.pos == (self.x_wall + 1, self.y_hole2 + 1) or
                 self.pos == (self.x_wall + 1, self.y_hole2 - 1)):
-            # episode finished unsuccessfully
-            done = True
             reward = -1
+            done = True
+        return reward, done
 
-        next_obs = self.get_observation()
-        return next_obs, reward, done
-    
     def set_pos(self, pos):
+        """put the agent into particular position in the field"""
         self.reset()
         self.field[0, 0] = 0
         self.pos = pos
         self.field[pos[0], pos[1]] = 2
         obs = self.get_observation()
         valid = True
-        if (pos == (self.w-1,0) or \
+        if (pos == (self.w-1, 0) or \
                 pos == (self.x_wall+1, self.y_hole2+1) or \
                 pos == (self.x_wall+1, self.y_hole2-1)):
             valid = False

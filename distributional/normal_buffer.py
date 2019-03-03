@@ -16,7 +16,7 @@ class ReplayBuffer:
         self.stored_in_buffer = 0
         self.transition = namedtuple(
             "Transition", ("s", "a", "r", "s_", "done"))
-        
+
     def push_transition(self, transition):
         """ transition = [state, action, reward, next_state, done]
         """
@@ -32,7 +32,7 @@ class ReplayBuffer:
             self.next_states = np.empty(
                 [self.size] + list(state.shape), dtype=np.uint8)
             self.dones = np.empty(
-                [self.size], dtype = np.bool)
+                [self.size], dtype=np.bool)
 
         self.states[self.idx] = state
         self.actions[self.idx] = action
@@ -42,7 +42,7 @@ class ReplayBuffer:
 
         self.idx = (self.idx + 1) % self.size
         self.stored_in_buffer = min(self.size, self.stored_in_buffer + 1)
-        
+
     def get_batch(self, batch_size):
         indices = random.sample(
             range(self.stored_in_buffer), k=batch_size)
