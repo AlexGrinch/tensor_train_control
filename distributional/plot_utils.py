@@ -186,3 +186,20 @@ def plot_compare_equal(paths, eta, x_scale=1000000):
         y = plot_average(r, eta)
         plt.plot(x[:min_l], y[:min_l])
     plt.grid()
+
+
+def plot_q_values(env, q_values, figsize=(15, 5)):
+    fig, ax = plt.subplots(1, 4, figsize=figsize)
+    q_table = np.zeros((env.w, env.h, 4))
+
+    idx = 0
+    for i in range(env.w):
+        for j in range(env.h):
+            valid, s = env.set_pos((i, j))
+            if valid:
+                q_table[i, j] = q_values[idx]
+                idx += 1
+
+    for a in range(4):
+        img = np.rot90(q_table[:,:,a])
+        ax[a].imshow(img, cmap='gray', vmin=-1, vmax=1)

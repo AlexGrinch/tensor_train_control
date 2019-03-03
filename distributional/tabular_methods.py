@@ -12,7 +12,12 @@ class QTable:
         self.env.reset()
         self.alpha = 0.3
         self.gamma = gamma
-        
+        self.end_states = set([
+            (self.w - 1, 0),
+            (self.env.x_wall + 1, self.env.y_hole2 + 1),
+            (self.env.x_wall + 1, self.env.y_hole2 - 1)
+        ])
+
     def update_xya(self, x, y, a):
         td_target = 0
         for act in range(4):
@@ -26,7 +31,7 @@ class QTable:
             self.env.set_pos((x_, y_))
             reward, done = self.env.get_reward_done()
 
-            if (x, y) != (self.w-1, 0):
+            if (x, y) not in self.end_states:
                 q_ = (self.q[x_, y_]*self.pi[x_, y_]).sum()
                 td_target += param * (reward + self.gamma * q_ * (1 - done))
 
@@ -38,11 +43,12 @@ class QTable:
             for x in range(self.w):
                 for y in range(self.h):
                     for a in range(4):
-                        if (x == self.w//2):
-                            if (y == self.h-4 or y == self.h-7):
-                                self.update_xya(x,y,a)
-                        else: self.update_xya(x,y,a)
-        res = np.linalg.norm(q_old-self.q)
+                        if (x == self.env.x_wall):
+                            if (y == self.env.y_hole or y == self.env.y_hole2):
+                                self.update_xya(x, y, a)
+                        else:
+                            self.update_xya(x, y, a)
+        res = np.linalg.norm(q_old - self.q)
         return res
             
     def update_policy(self):
@@ -63,7 +69,7 @@ class QTable:
         fig, ax = plt.subplots(1, 4, figsize=figsize)
         for a in range(4):
             img = np.rot90(self.q[:,:,a])
-            ax[a].imshow(img, cmap='gray', vmin=0, vmax=1)
+            ax[a].imshow(img, cmap='gray', vmin=-1, vmax=1)
             
     def q_learning(self, max_num_iter=100, max_ep_len=100, lr=0.1, state=(0, 0)):
         self.q = np.zeros((self.w, self.h, 4))
