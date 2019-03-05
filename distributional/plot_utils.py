@@ -2,42 +2,71 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-def plot_average(r, eta):
-    ret = np.cumsum(r, dtype=np.float)
-    ret[eta:] = ret[eta:] - ret[:-eta] 
-    y = ret[eta - 1:] / eta
-    return y
+def plot_boi(
+    x, y, tau, ax,
+    x_scale=1, y_scale=1, y_range=None,
+    color="black", label="algo"
+):
 
-
-def plot_max(r, eta):
-    return r[eta-1:]
-
-
-def plot_means_and_stdevs(x, y, tau, figsize=(8, 5), color='dodgerblue'):
-    
-    fig, ax = plt.subplots(1, 1, figsize=figsize)
+    y = np.array(y) * y_scale
+    x = np.array(x) * x_scale
 
     means = np.cumsum(y, dtype=np.float)
-    stdevs = np.cumsum(np.square(y), dtype=np.float)
-    
     means[tau:] = means[tau:] - means[:-tau]
     means = means[tau-1:] / tau
-    
+
+    stdevs = np.cumsum(np.square(y), dtype=np.float)
     stdevs[tau:] = stdevs[tau:] - stdevs[:-tau]
     stdevs = stdevs[tau-1:] / tau - np.square(means)
-    stdevs = np.sqrt(stdevs)
-    
+    stdevs = np.sqrt(stdevs) / 2
+
     lower = means - stdevs
     upper = means + stdevs
-    
-    x = plot_max(x, tau)
-    
-    ax.plot(x, means, color=color)
-    ax.fill_between(x, lower, means, alpha=0.2, where=lower <= means, facecolor=color)
-    ax.fill_between(x, upper, means, alpha=0.2, where=upper >= means, facecolor=color)
-    plt.ylim([-1.1, 1.6])
-    
-    ax.grid()
+
+    x = np.cumsum(x, dtype=np.float)
+    x[tau:] = x[tau:] - x[:-tau]
+    x = x[tau-1:] / tau
+
+    ax.plot(x, means, color=color, label=label)
+    ax.fill_between(
+        x, lower, means, alpha=0.2,
+        where=lower <= means, facecolor=color
+    )
+    ax.fill_between(
+        x, upper, means, alpha=0.2,
+        where=upper >= means, facecolor=color
+    )
+
+    if y_range is not None:
+        ax.set_ylim(y_range)
+        
+        
+def plot_everything(paths, titles, colors, labels, tau):
+    fig, ax = plt.subplots(3, 2, figsize=(18, 18))
+    for i in range(5):
+
+        ax[i//2, i%2].grid()
+        ax[i//2, i%2].spines['right'].set_visible(False)
+        ax[i//2, i%2].spines['top'].set_visible(False)
+        for tick in ax[i//2, i%2].xaxis.get_major_ticks():
+            tick.label.set_fontsize(18) 
+        for tick in ax[i//2, i%2].yaxis.get_major_ticks():
+            tick.label.set_fontsize(18)
+        ax[i//2, i%2].set_yticks([-0.5, 0.0, 0.5, 1.0])
+        ax[i//2, i%2].set_title(titles[i], fontsize=18)
+
+        data = np.load(paths[i])["test"]
+        algos = [data[0, :], data[1, :], data[2, :]]
+        for j in range(3):
+            returns = data[j, :]
+            plot_boi(
+                np.arange(len(returns)), returns,
+                tau=tau, ax=ax[i//2, i%2],
+                color=colors[j], label=labels[j],
+                x_scale=1/200, y_range=[-0.6, 1.2])
+
+        if i == 4:
+            ax[i//2, i%2].legend(fontsize=20)
 
 
 def plot_two_lines(
