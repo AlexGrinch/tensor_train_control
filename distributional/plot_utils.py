@@ -17,7 +17,7 @@ def plot_boi(
 
     stdevs = np.cumsum(np.square(y), dtype=np.float)
     stdevs[tau:] = stdevs[tau:] - stdevs[:-tau]
-    stdevs = stdevs[tau-1:] / tau - np.square(means)
+    stdevs = np.maximum(stdevs[tau-1:] / tau - np.square(means), 0)
     stdevs = np.sqrt(stdevs) / 2
 
     lower = means - stdevs
@@ -41,9 +41,12 @@ def plot_boi(
         ax.set_ylim(y_range)
         
         
-def plot_everything(paths, titles, colors, labels, tau):
-    fig, ax = plt.subplots(3, 2, figsize=(18, 18))
-    for i in range(5):
+def plot_everything(
+    paths, titles, colors, labels, tau,
+    y_range=[-0.6, 1.2], save=None
+):
+    fig, ax = plt.subplots(3, 2, figsize=(18, 15))
+    for i in range(6):
 
         ax[i//2, i%2].grid()
         ax[i//2, i%2].spines['right'].set_visible(False)
@@ -52,7 +55,8 @@ def plot_everything(paths, titles, colors, labels, tau):
             tick.label.set_fontsize(18) 
         for tick in ax[i//2, i%2].yaxis.get_major_ticks():
             tick.label.set_fontsize(18)
-        ax[i//2, i%2].set_yticks([-0.5, 0.0, 0.5, 1.0])
+        if y_range is not None:
+            ax[i//2, i%2].set_yticks([-0.5, 0.0, 0.5, 1.0])
         ax[i//2, i%2].set_title(titles[i], fontsize=18)
 
         data = np.load(paths[i])["test"]
@@ -63,10 +67,14 @@ def plot_everything(paths, titles, colors, labels, tau):
                 np.arange(len(returns)), returns,
                 tau=tau, ax=ax[i//2, i%2],
                 color=colors[j], label=labels[j],
-                x_scale=1/200, y_range=[-0.6, 1.2])
+                x_scale=1/200, y_range=y_range
+            )
 
-        if i == 4:
+        if i == 0:
             ax[i//2, i%2].legend(fontsize=20)
+            
+    if save is not None:
+        fig.savefig(save, dpi=100, bbox_inches="tight")
 
 
 def plot_two_lines(
