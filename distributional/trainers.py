@@ -1,464 +1,198 @@
 import numpy as np
-import random
-import tensorflow as tf
-import tensorflow.contrib.layers as layers
-from tensorflow.contrib.layers import convolution2d as conv
-from tensorflow.contrib.layers import fully_connected as fc
-from tensorflow.contrib.layers import xavier_initializer as xavier
+import copy
+import torch
+import torch.nn as nn
 
-####################################################################################################
-########################################### Core modules ###########################################
-####################################################################################################
-
-def conv_module(input_layer, convs, activation_fn=tf.nn.relu):
-    """ convolutional module
-    """
-    out = input_layer
-    for num_outputs, kernel_size, stride in convs:
-        out = conv(
-            out,
-            num_outputs=num_outputs,
-            kernel_size=kernel_size,
-            stride=stride,
-            padding='VALID',
-            activation_fn=activation_fn)
-    return out
-    
-def fc_module(input_layer, fully_connected, activation_fn=tf.nn.relu):
-    """ fully connected module
-    """
-    out = input_layer
-    for num_outputs in fully_connected:
-        out = fc(
-            out,
-            num_outputs=num_outputs,
-            activation_fn=activation_fn,
-            weights_initializer=xavier())
-    return out
-
-def full_module(
-        input_layer, convs, fully_connected,
-        num_outputs, activation_fn=tf.nn.relu):
-    """ convolutional + fully connected + output
-    """
-    out = input_layer
-    out = conv_module(out, convs, activation_fn)
-    out = layers.flatten(out)
-    out = fc_module(out, fully_connected, activation_fn)
-    out = fc_module(out, [num_outputs], None)
-    return out
+from .utils import *
 
 
-class DQNTrainer:
-    
+class StateActionNetwork(nn.Module):
     def __init__(
-            self, num_actions, state_shape=[8, 8, 5],
-            convs=[[32, 4, 2], [64, 2, 1]],
-            fully_connected=[128],
-            activation_fn=tf.nn.relu,
-            optimizer=tf.train.AdamOptimizer(2.5e-4, epsilon=0.01/32),
-            optimizer_target=tf.train.AdamOptimizer(2.5e-4, epsilon=0.01/32),
-            gradient_clip=10.0, gamma=0.99, scope="dqn", reuse=False):
-        self.gamma = gamma
+        self,
+        num_actions,
+        state_shape,
+        convs=[[32, 4, 2], [64, 2, 1]],
+        hiddens=[128],
+        num_atoms=1
+    ):
+        super(StateActionNetwork, self).__init__()
+        self._num_actions = num_actions
+        self._num_atoms = num_atoms
 
-        self.agent_net = DeepQNetwork(
-            num_actions, state_shape, convs, fully_connected,
-            activation_fn, optimizer, gradient_clip,
-            scope=scope+"_agent", reuse=reuse)
-        
-        self.target_net = DeepQNetwork(
-            num_actions, state_shape, convs, fully_connected,
-            activation_fn, optimizer_target, gradient_clip,
-            scope=scope+"_target", reuse=reuse)
-        
-        self.agent_vars = tf.global_variables(scope=scope+"_agent")
-        self.target_vars = tf.global_variables(scope=scope+"_target")
-        
-    def train(self, sess, batch):
-        agent_actions = self.agent_net.get_q_argmax(sess, batch.s_)
-        q_double = self.target_net.get_q_values_sa(sess, batch.s_, agent_actions)
-        targets = batch.r + (self.gamma * q_double * (1 - batch.done))
-        self.agent_net.update(sess, batch.s, batch.a, targets)
-        
-    def get_greedy_action(self, sess, states):
-        return self.agent_net.get_q_argmax(sess, states)
-    
-    def update_target(self, sess):
-        update_ops = []
-        for v_agnt, v_trgt in zip(
-                self.agent_vars, self.target_vars):
-            update_ops.append(v_trgt.assign(v_agnt))
-        sess.run(update_ops)
+        # convolutional part of the network
+        conv_net = []
+        in_channels = state_shape[-1]
+        for conv in convs:
+            out_channels, kernel_size, stride = conv
+            conv_net.append(
+                nn.Conv2d(in_channels, out_channels, kernel_size, stride)
+            )
+            conv_net.append(nn.ReLU())
+            in_channels = out_channels
+        self.conv_net = nn.Sequential(*conv_net)
 
-    def get_q_values(self, sess, states):
-        return self.agent_net.get_q_values_s(sess, states)
+        # calculate number of features after flattened convolutions
+        hws = state_shape[:-1]
+        for i in range(len(convs)):
+            out_channels, kernel_size, stride = convs[i]
+            for j in range(len(hws)):
+                hws[j] = (hws[j] - kernel_size) // stride + 1
+        in_features = np.prod(hws) * out_channels
+
+        # fully connected part of the network
+        fc_net = []
+        for hidden in hiddens:
+            fc_net.append(nn.Linear(in_features, hidden))
+            fc_net.append(nn.ReLU())
+            in_features = hidden
+        self.fc_net = nn.Sequential(*fc_net)
+
+        # head of the network
+        self.head_net = nn.Linear(hidden, num_actions * num_atoms, bias=False)
+
+    def forward(self, x):
+        batch_size = x.shape[0]
+        x = self.conv_net(x)
+        x = x.view(batch_size, -1)
+        x = self.fc_net(x)
+        x = self.head_net(x)
+        x = x.view(-1, self._num_actions, self._num_atoms)
+        return x
 
 
-class QuantileTrainer:
-    
+class Trainer:
     def __init__(
-            self, num_actions, state_shape=[8, 8, 5],
-            convs=[[32, 4, 2], [64, 2, 1]],
-            fully_connected=[128],
-            activation_fn=tf.nn.relu, num_atoms=50, kappa=1.0,
-            optimizer=tf.train.AdamOptimizer(2.5e-4, epsilon=0.01/32),
-            optimizer_target=tf.train.AdamOptimizer(2.5e-4, epsilon=0.01/32),
-            gamma=0.99, scope="quant_dqn", reuse=False):
+        self,
+        num_actions,
+        state_shape,
+        convs=[[32, 4, 2], [64, 2, 1]],
+        hiddens=[128],
+        num_atoms=1,
+        values_range=(-10., 10.),
+        distribution=None,
+        optimizer=torch.optim.Adam,
+        optimizer_params={"lr": 2.5e-4, "eps": 0.01/32},
+        huber_loss_delta=10.,
+        gamma=0.99
+    ):
+
         self.gamma = gamma
+        self.num_atoms = num_atoms
+        self.distribution = distribution
 
-        self.agent_net = QuantileRegressionDeepQNetwork(
-            num_actions, state_shape, convs, fully_connected,
-            num_atoms, kappa, activation_fn, optimizer,
-            scope=scope+"_agent", reuse=reuse)
-        
-        self.target_net = QuantileRegressionDeepQNetwork(
-            num_actions, state_shape, convs, fully_connected,
-            num_atoms, kappa, activation_fn, optimizer_target,
-            scope=scope+"_target", reuse=reuse)
-        
-        self.agent_vars = tf.global_variables(scope=scope+"_agent")
-        self.target_vars = tf.global_variables(scope=scope+"_target")
+        self._device = torch.device("cpu")
 
-    def train(self, sess, batch):
-        agent_actions = self.agent_net.get_q_argmax(sess, batch.s_)
-        next_atoms = self.target_net.get_atoms_sa(sess, batch.s_, agent_actions)
-        target_atoms = batch.r[:, None] + self.gamma * next_atoms * (1 - batch.done[:, None])
-        self.agent_net.update(sess, batch.s, batch.a, target_atoms)   
-        
-    def get_greedy_action(self, sess, states):
-        return self.agent_net.get_q_argmax(sess, states)
-    
-    def update_target(self, sess):
-        update_ops = []
-        for v_agnt, v_trgt in zip(
-                self.agent_vars, self.target_vars):
-            update_ops.append(v_trgt.assign(v_agnt))
-        sess.run(update_ops)
+        self.agent_net = StateActionNetwork(
+            num_actions, state_shape, convs, hiddens, num_atoms
+        ).to(self._device)
+        self.target_net = copy.deepcopy(self.agent_net).to(self._device)
+        self.optimizer = optimizer(
+            self.agent_net.parameters(), **optimizer_params
+        )
+        self.criterion = HuberLoss(huber_loss_delta)
 
-    def get_q_values(self, sess, states):
-        return self.agent_net.get_q_values_s(sess, states)
-    
-    
-class CategoricalTrainer:
-    
-    def __init__(
-            self, num_actions, state_shape=[8, 8, 5],
-            convs=[[32, 4, 2], [64, 2, 1]],
-            fully_connected=[128],
-            activation_fn=tf.nn.relu, num_atoms=50, v=(-5, 5),
-            optimizer=tf.train.AdamOptimizer(2.5e-4, epsilon=0.01/32),
-            optimizer_target=tf.train.AdamOptimizer(2.5e-4, epsilon=0.01/32),
-            gamma=0.99, scope="cat_dqn", reuse=False):
-        self.gamma = gamma
-
-        self.agent_net = CategoricalDeepQNetwork(
-            num_actions, state_shape, convs, fully_connected,
-            num_atoms, v, activation_fn, optimizer,
-            scope=scope+"_agent", reuse=reuse)
-        
-        self.target_net = CategoricalDeepQNetwork(
-            num_actions, state_shape, convs, fully_connected,
-            num_atoms, v, activation_fn, optimizer_target,
-            scope=scope+"_target", reuse=reuse)
-        
-        self.agent_vars = tf.global_variables(scope=scope+"_agent")
-        self.target_vars = tf.global_variables(scope=scope+"_target")
-
-    def train(self, sess, batch):
-        agent_actions = self.agent_net.get_q_argmax(sess, batch.s_)
-        target_probs = self.target_net.cat_proj(
-            sess, batch.s_, agent_actions, batch.r, batch.done, gamma=self.gamma)
-        self.agent_net.update(sess, batch.s, batch.a, target_probs)  
-
-    def get_greedy_action(self, sess, states):
-        return self.agent_net.get_q_argmax(sess, states)
-
-    def update_target(self, sess):
-        update_ops = []
-        for v_agnt, v_trgt in zip(
-                self.agent_vars, self.target_vars):
-            update_ops.append(v_trgt.assign(v_agnt))
-        sess.run(update_ops)
-
-    def get_q_values(self, sess, states):
-        return self.agent_net.get_q_values_s(sess, states)
-
-####################################################################################################
-########################################## Deep Q-Network ##########################################
-####################################################################################################
-
-class DeepQNetwork:
-
-    def __init__(self, num_actions, state_shape=[8, 8, 5],
-                 convs=[[32, 4, 2], [64, 2, 1]], 
-                 fully_connected=[128],
-                 activation_fn=tf.nn.relu,
-                 optimizer=tf.train.AdamOptimizer(2.5e-4, epsilon=0.01/32),
-                 gradient_clip=10.0,
-                 scope="dqn", reuse=False):
-        
-        with tf.variable_scope(scope, reuse=reuse):
-
-            ########################### Neural network architecture ###########################
-
-            input_shape = [None] + state_shape
-            self.input_states = tf.placeholder(dtype=tf.float32, shape=input_shape)
-
-            self.q_values = full_module(self.input_states, convs, fully_connected,
-                                        num_actions, activation_fn)
-
-            ############################## Optimization procedure #############################
-
-            # convert input actions to indices for q-values selection
-            self.input_actions = tf.placeholder(dtype=tf.int32, shape=[None])
-            indices_range = tf.range(tf.shape(self.input_actions)[0])
-            action_indices = tf.stack([indices_range, self.input_actions], axis=1)
-            
-            # select q-values for input actions
-            self.q_values_selected = tf.gather_nd(self.q_values, action_indices)
-            
-            # select best actions (according to q-values)
-            self.q_argmax = tf.argmax(self.q_values, axis=1)
-
-            # define loss function and update rule
-            self.q_targets = tf.placeholder(dtype=tf.float32, shape=[None])
-            self.loss = tf.losses.huber_loss(self.q_targets, self.q_values_selected, 
-                                             delta=gradient_clip)
-            self.update_model = optimizer.minimize(self.loss)
-
-    def get_q_values_s(self, sess, states):
-        feed_dict = {self.input_states:states}
-        q_values = sess.run(self.q_values, feed_dict)
-        return q_values
-    
-    def get_q_values_sa(self, sess, states, actions):
-        feed_dict = {self.input_states:states, self.input_actions:actions}
-        q_values_selected = sess.run(self.q_values_selected, feed_dict)
-        return q_values_selected
-    
-    def get_q_argmax(self, sess, states):
-        feed_dict = {self.input_states:states}
-        q_argmax = sess.run(self.q_argmax, feed_dict)
-        return q_argmax
-
-    def update(self, sess, states, actions, q_targets):
-
-        feed_dict = {self.input_states:states,
-                     self.input_actions:actions,
-                     self.q_targets:q_targets}
-        sess.run(self.update_model, feed_dict)
-        
-####################################################################################################
-################################ Qantile Regression Deep Q-Network #################################
-####################################################################################################
-
-class QuantileRegressionDeepQNetwork:
-    
-    def __init__(self, num_actions, state_shape=[8, 8, 5],
-                 convs=[[32, 4, 2], [64, 2, 1]],
-                 fully_connected=[128], 
-                 num_atoms=50, kappa=1.0,
-                 activation_fn=tf.nn.relu,
-                 optimizer=tf.train.AdamOptimizer(2.5e-4, epsilon=0.01/32),
-                 scope="qr_dqn", reuse=False):
-        
-        with tf.variable_scope(scope, reuse=reuse):
-
-            ########################### Neural network architecture ###########################
-
-            input_shape = [None] + state_shape
-            self.input_states = tf.placeholder(dtype=tf.float32, shape=input_shape)
-        
-            # distribution parameters
-            tau_min = 1 / (2 * num_atoms) 
+        self._loss_fn = self._base_loss
+        if self.distribution == "quantile":
+            tau_min = 1 / (2 * self.num_atoms)
             tau_max = 1 - tau_min
-            tau_vector = tf.lin_space(start=tau_min, stop=tau_max, num=num_atoms)
-            
-            # reshape tau to matrix for fast loss calculation
-            tau_matrix = tf.tile(tau_vector, [num_atoms])
-            self.tau_matrix = tf.reshape(tau_matrix, shape=[num_atoms, num_atoms])
-            
-            # main module
-            out = full_module(self.input_states, convs, fully_connected,
-                              num_outputs=num_actions*num_atoms, activation_fn=activation_fn)
-            self.atoms = tf.reshape(out, shape=[-1, num_actions, num_atoms])
-            self.q_values = tf.reduce_mean(self.atoms, axis=2)
-
-            ############################## Optimization procedure #############################
-
-            # convert input actions to indices for atoms and q-values selection
-            self.input_actions = tf.placeholder(dtype=tf.int32, shape=[None])
-            indices_range = tf.range(tf.shape(self.input_actions)[0])
-            action_indices = tf.stack([indices_range, self.input_actions], axis=1)
-
-            # select q-values for input actions
-            self.q_values_selected = tf.gather_nd(self.q_values, action_indices)
-            self.atoms_selected = tf.gather_nd(self.atoms, action_indices)
-            
-            # select best actions (according to q-values)
-            self.q_argmax = tf.argmax(self.q_values, axis=1)
-            
-            # reshape chosen atoms to matrix for fast loss calculation
-            atoms_matrix = tf.tile(self.atoms_selected, [1, num_atoms])
-            self.atoms_matrix = tf.reshape(atoms_matrix, shape=[-1, num_atoms, num_atoms])
-            
-            # reshape target atoms to matrix for fast loss calculation
-            self.atoms_targets = tf.placeholder(dtype=tf.float32, shape=[None, num_atoms])
-            targets_matrix = tf.tile(self.atoms_targets, [1, num_atoms])
-            targets_matrix = tf.reshape(targets_matrix, shape=[-1, num_atoms, num_atoms])
-            self.targets_matrix = tf.transpose(targets_matrix, perm=[0, 2, 1])
-            
-            # define loss function and update rule
-            atoms_diff = self.targets_matrix - self.atoms_matrix
-            delta_atoms_diff = tf.where(atoms_diff<0, tf.ones_like(atoms_diff), tf.zeros_like(atoms_diff))
-            huber_weights = tf.abs(self.tau_matrix - delta_atoms_diff) / num_atoms
-            self.loss = self.huber_loss(
-                self.targets_matrix, 
-                self.atoms_matrix,
-                huber_weights,
-                kappa)
-            self.loss2 = tf.losses.huber_loss(self.targets_matrix, self.atoms_matrix, weights=huber_weights,
-                                             delta=kappa, reduction=tf.losses.Reduction.SUM)
-            self.update_model = optimizer.minimize(self.loss)
-
-    def get_q_values_s(self, sess, states):
-        feed_dict = {self.input_states:states}
-        q_values = sess.run(self.q_values, feed_dict)
-        return q_values
-    
-    def get_q_values_sa(self, sess, states, actions):
-        feed_dict = {self.input_states:states, self.input_actions:actions}
-        q_values_selected = sess.run(self.q_values_selected, feed_dict)
-        return q_values_selected
-    
-    def get_q_argmax(self, sess, states):
-        feed_dict = {self.input_states:states}
-        q_argmax = sess.run(self.q_argmax, feed_dict)
-        return q_argmax
-    
-    def get_atoms_s(self, sess, states):
-        feed_dict = {self.input_states:states}
-        atoms = sess.run(self.atoms, feed_dict)
-        return probs
-    
-    def get_atoms_sa(self, sess, states, actions):
-        feed_dict = {self.input_states:states, self.input_actions:actions}
-        atoms_selected = sess.run(self.atoms_selected, feed_dict)
-        return atoms_selected
-
-    def update(self, sess, states, actions, atoms_targets):
-
-        feed_dict = {self.input_states:states,
-                     self.input_actions:actions,
-                     self.atoms_targets:atoms_targets}
-        loss1, loss2,  _ = sess.run([self.loss, self.loss2, self.update_model], feed_dict)
-        #print (loss1, loss2)
-        
-    def huber_loss(self, source, target, weights, kappa=1.0):
-        err = tf.subtract(source, target)
-        loss = tf.where(
-            tf.abs(err) < kappa,
-            0.5 * tf.square(err),
-            kappa * (tf.abs(err) - 0.5 * kappa))
-        return tf.reduce_sum(tf.multiply(loss, weights))
-
-####################################################################################################
-#################################### Categorical Deep Q-Network ####################################
-####################################################################################################
-
-class CategoricalDeepQNetwork:
-    
-    def __init__(self, num_actions, state_shape=[8, 8, 5],
-                 convs=[[32, 4, 2], [64, 2, 1]],
-                 fully_connected=[128], 
-                 num_atoms=21, v=(-10, 10),
-                 activation_fn=tf.nn.relu,
-                 optimizer=tf.train.AdamOptimizer(2.5e-4, epsilon=0.01/32),
-                 scope="cat_dqn", reuse=False):
-        
-        with tf.variable_scope(scope, reuse=reuse):
-
-            ########################### Neural network architecture ###########################
-
-            input_shape = [None] + state_shape
-            self.input_states = tf.placeholder(dtype=tf.float32, shape=input_shape)
-        
-            # distribution parameters
-            self.num_atoms = num_atoms
-            self.v_min, self.v_max = v
+            self.tau = torch.linspace(
+                start=tau_min, end=tau_max, steps=self.num_atoms
+            ).to(self._device)
+            self._loss_fn = self._quantile_loss
+        elif self.distribution == "categorical":
+            self.v_min, self.v_max = values_range
             self.delta_z = (self.v_max - self.v_min) / (self.num_atoms - 1)
-            self.z = np.linspace(start=self.v_min, stop=self.v_max, num=num_atoms)
+            self.z = torch.linspace(
+                start=self.v_min, end=self.v_max, steps=self.num_atoms
+            ).to(self._device)
+            self._loss_fn = self._categorical_loss
 
-            # main module
-            out = full_module(self.input_states, convs, fully_connected,
-                              num_outputs=num_actions*num_atoms, activation_fn=activation_fn)
-                      
-            self.logits = tf.reshape(out, shape=[-1, num_actions, num_atoms])
-            self.probs = tf.nn.softmax(self.logits, axis=2)
-            self.q_values = tf.reduce_sum(tf.multiply(self.probs, self.z), axis=2)
+    def _to_tensor(self, *args, **kwargs):
+        return torch.from_numpy(*args, **kwargs).to(self._device)
 
-            ############################## Optimization procedure #############################
+    def train(self, batch):
+        states_t = self._to_tensor(batch.s).permute(0, 3, 1, 2).float()
+        actions_t = self._to_tensor(batch.a).long()
+        rewards = self._to_tensor(batch.r).float()
+        states_tp1 = self._to_tensor(batch.s_).permute(0, 3, 1, 2).float()
+        dones = self._to_tensor(batch.done).float()
 
-            # convert input actions to indices for probs and q-values selection
-            self.input_actions = tf.placeholder(dtype=tf.int32, shape=[None])
-            indices_range = tf.range(tf.shape(self.input_actions)[0])
-            action_indices = tf.stack([indices_range, self.input_actions], axis=1)
+        loss = self._loss_fn(states_t, actions_t, rewards, states_tp1, dones)
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
 
-            # select q-values and probs for input actions
-            self.q_values_selected = tf.gather_nd(self.q_values, action_indices)
-            self.probs_selected = tf.gather_nd(self.probs, action_indices)
-            
-            # select best actions (according to q-values)
-            self.q_argmax = tf.argmax(self.q_values, axis=1)
+    def update_target(self):
+        soft_update(self.target_net, self.agent_net, 1.0)
 
-            # define loss function and update rule
-            self.probs_targets = tf.placeholder(dtype=tf.float32, shape=[None, self.num_atoms])
-            self.loss = -tf.reduce_sum(self.probs_targets * tf.log(self.probs_selected+1e-6))
-            self.update_model = optimizer.minimize(self.loss)
-    
-    def get_q_values_s(self, sess, states):
-        feed_dict = {self.input_states:states}
-        q_values = sess.run(self.q_values, feed_dict)
-        return q_values
-    
-    def get_q_values_sa(self, sess, states, actions):
-        feed_dict = {self.input_states:states, self.input_actions:actions}
-        q_values_selected = sess.run(self.q_values_selected, feed_dict)
-        return q_values_selected
-    
-    def get_q_argmax(self, sess, states):
-        feed_dict = {self.input_states:states}
-        q_argmax = sess.run(self.q_argmax, feed_dict)
-        return q_argmax
-    
-    def get_probs_s(self, sess, states):
-        feed_dict = {self.input_states:states}
-        probs = sess.run(self.probs, feed_dict)
-        return probs
-    
-    def get_probs_sa(self, sess, states, actions):
-        feed_dict = {self.input_states:states, self.input_actions:actions}
-        probs_selected = sess.run(self.probs_selected, feed_dict)
-        return probs_selected
-    
-    def update(self, sess, states, actions, probs_targets):
+    def get_q_values(self, states):
+        states = self._to_tensor(states).permute(0, 3, 1, 2).float()
+        net_outputs = self.agent_net(states)
+        if self.distribution == "quantile":
+            q_values = net_outputs.mean(dim=-1)
+        elif self.distribution == "categorical":
+            probs = torch.softmax(net_outputs, dim=-1)
+            q_values = torch.sum(probs * self.z, dim=-1)
+        else:
+            q_values = net_outputs.squeeze(1)
+        return q_values.detach().cpu().numpy()
 
-        feed_dict = {self.input_states:states,
-                     self.input_actions:actions,
-                     self.probs_targets:probs_targets}
-        sess.run(self.update_model, feed_dict)
-  
-    def cat_proj(self, sess, states, actions, rewards, done, gamma=0.99):
-        """
-        Categorical algorithm from https://arxiv.org/abs/1707.06887
-        """
-    
-        atoms_targets = rewards[:,None] + gamma * self.z * (1 - done[:,None])
-        tz = np.clip(atoms_targets, self.v_min, self.v_max)
-        tz_z = tz[:, None, :] - self.z[None, :, None]
-        tz_z = np.clip((1.0 - (np.abs(tz_z) / self.delta_z)), 0, 1)
-        
-        probs = self.get_probs_sa(sess, states, actions)
-        probs_targets = np.einsum('bij,bj->bi', tz_z, probs)
+    def get_greedy_action(self, state):
+        states = self._to_tensor(state).unsqueeze(0).permute(0, 3, 1, 2)
+        q_values = self.get_q_values(states)[0]
+        action = np.argmax(q_values)
+        return action
 
-        return probs_targets 
+    def _base_loss(self, states_t, actions_t, rewards_t, states_tp1, done_t):
+
+        q_values_t = self.agent_net(states_t).squeeze(-1).gather(-1, actions_t)
+        q_values_tp1 = \
+            self.target_net(states_tp1).squeeze(-1).max(-1, keepdim=True)[0]
+        q_target_t = \
+            rewards_t + (1 - done_t) * self.gamma * q_values_tp1.detach()
+        value_loss = self.criterion(q_values_t, q_target_t).mean()
+
+        return value_loss
+
+    def _quantile_loss(
+        self, states_t, actions_t, rewards_t, states_tp1, done_t
+    ):
+
+        indices_t = actions_t.repeat(1, self.num_atoms).unsqueeze(1)
+        atoms_t = self.agent_net(states_t).gather(1, indices_t).squeeze(1)
+
+        all_atoms_tp1 = self.target_net(states_tp1).detach()
+        q_values_tp1 = all_atoms_tp1.mean(dim=-1)
+        actions_tp1 = torch.argmax(q_values_tp1, dim=-1, keepdim=True)
+        indices_tp1 = actions_tp1.repeat(1, self.num_atoms).unsqueeze(1)
+        atoms_tp1 = all_atoms_tp1.gather(1, indices_tp1).squeeze(1)
+        atoms_target_t = rewards_t + (1 - done_t) * self.gamma * atoms_tp1
+
+        value_loss = quantile_loss(
+            atoms_t, atoms_target_t, self.tau, self.num_atoms, self.criterion
+        )
+
+        return value_loss
+
+    def _categorical_loss(
+        self, states_t, actions_t, rewards_t, states_tp1, done_t
+    ):
+
+        indices_t = actions_t.repeat(1, self.num_atoms).unsqueeze(1)
+        logits_t = self.agent_net(states_t).gather(1, indices_t).squeeze(1)
+
+        all_logits_tp1 = self.target_net(states_tp1).detach()
+        q_values_tp1 = torch.sum(
+            torch.softmax(all_logits_tp1, dim=-1) * self.z, dim=-1
+        )
+        actions_tp1 = torch.argmax(q_values_tp1, dim=-1, keepdim=True)
+        indices_tp1 = actions_tp1.repeat(1, self.num_atoms).unsqueeze(1)
+        logits_tp1 = all_logits_tp1.gather(1, indices_tp1).squeeze(1)
+        atoms_target_t = rewards_t + (1 - done_t) * self.gamma * self.z
+
+        value_loss = categorical_loss(
+            logits_t, logits_tp1, atoms_target_t, self.z, self.delta_z,
+            self.v_min, self.v_max
+        )
+
+        return value_loss
