@@ -3,7 +3,7 @@ import copy
 import torch
 import torch.nn as nn
 
-from .utils import *
+from utils import *
 
 
 class StateActionNetwork(nn.Module):
@@ -80,7 +80,7 @@ class Trainer:
         self.num_atoms = num_atoms
         self.distribution = distribution
 
-        self._device = torch.device("cpu")
+        self._device = torch.device("cuda")
 
         self.agent_net = StateActionNetwork(
             num_actions, state_shape, convs, hiddens, num_atoms
@@ -112,10 +112,10 @@ class Trainer:
 
     def train(self, batch):
         states_t = self._to_tensor(batch.s).permute(0, 3, 1, 2).float()
-        actions_t = self._to_tensor(batch.a).long()
-        rewards = self._to_tensor(batch.r).float()
+        actions_t = self._to_tensor(batch.a).long().unsqueeze(1)
+        rewards = self._to_tensor(batch.r).float().unsqueeze(1)
         states_tp1 = self._to_tensor(batch.s_).permute(0, 3, 1, 2).float()
-        dones = self._to_tensor(batch.done).float()
+        dones = self._to_tensor(batch.done).float().unsqueeze(1)
 
         loss = self._loss_fn(states_t, actions_t, rewards, states_tp1, dones)
         self.optimizer.zero_grad()
@@ -134,12 +134,11 @@ class Trainer:
             probs = torch.softmax(net_outputs, dim=-1)
             q_values = torch.sum(probs * self.z, dim=-1)
         else:
-            q_values = net_outputs.squeeze(1)
+            q_values = net_outputs.squeeze(2)
         return q_values.detach().cpu().numpy()
 
     def get_greedy_action(self, state):
-        states = self._to_tensor(state).unsqueeze(0).permute(0, 3, 1, 2)
-        q_values = self.get_q_values(states)[0]
+        q_values = self.get_q_values(state[None, ...])[0]
         action = np.argmax(q_values)
         return action
 

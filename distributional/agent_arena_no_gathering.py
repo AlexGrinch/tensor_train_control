@@ -57,7 +57,6 @@ class AgentArena:
 
     def start(
         self,
-        gpu_id=0,
         batch_size=32,
         agent_update_freq=4,
         target_update_freq=5000,
@@ -95,7 +94,8 @@ class AgentArena:
                     self.path+"/learning_curve.npz",
                     test=test_rewards,
                     test_num_steps=test_num_steps,
-                    q_vals=test_q_values)
+                    q_vals=test_q_values
+                )
 
             episode_count += 1
 
@@ -111,15 +111,3 @@ class AgentArena:
                 break
             last_obs = obs
         return ep_reward, time_step + 1
-
-    def gpu_config(self, gpu_id):
-        if (gpu_id == -1):
-            config = tf.ConfigProto()
-        else:
-            os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-            os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-            config = tf.ConfigProto()
-            config.gpu_options.allow_growth = True
-            config.intra_op_parallelism_threads = 1
-            config.inter_op_parallelism_threads= 1
-        return config

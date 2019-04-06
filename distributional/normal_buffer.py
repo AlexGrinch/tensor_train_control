@@ -24,15 +24,14 @@ class ReplayBuffer:
 
         if self.states is None:
             self.states = np.empty(
-                [self.size] + list(state.shape), dtype=np.uint8)
-            self.actions = np.empty(
-                [self.size], dtype=np.int32)
-            self.rewards = np.empty(
-                [self.size], dtype=np.float32)
+                [self.size] + list(state.shape), dtype=np.uint8
+            )
+            self.actions = np.empty([self.size], dtype=np.int32)
+            self.rewards = np.empty([self.size], dtype=np.float32)
             self.next_states = np.empty(
-                [self.size] + list(state.shape), dtype=np.uint8)
-            self.dones = np.empty(
-                [self.size], dtype=np.bool)
+                [self.size] + list(state.shape), dtype=np.uint8
+            )
+            self.dones = np.empty([self.size], dtype=np.bool)
 
         self.states[self.idx] = state
         self.actions[self.idx] = action
@@ -50,6 +49,6 @@ class ReplayBuffer:
         a = self.actions[indices]
         r = self.rewards[indices]
         s_ = self.next_states[indices]
-        done = self.dones[indices]
+        done = self.dones[indices].astype(np.float32)
         batch = self.transition(s, a, r, s_, done)
         return batch
