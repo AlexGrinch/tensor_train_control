@@ -44,7 +44,7 @@ class QQTTDDPG(BaseDDPG):
         discount = self._gamma ** self._n_step
         target_q = self._rewards[:, None] + discount * (1 - self._terminator[:, None]) * next_q
         
-        print (agent_q, next_q, target_q)
+        #print (next_action, target_q)
 
         # critic gradient and update rule
         critic_loss = tf.losses.huber_loss(agent_q, tf.stop_gradient(target_q))
@@ -79,7 +79,9 @@ class QQTTDDPG(BaseDDPG):
         feed_dict = {}
         for i in range(len(states)):
             feed_dict[self._state_for_act[i]] = states[i]
+            #print ("SHIIIIIIIIIIIIIIIITTTTTTT", self._actor_action)
         actions = sess.run(self._actor_action, feed_dict=feed_dict)
+        
         return actions.tolist()
 
     def train(self, sess, batch):

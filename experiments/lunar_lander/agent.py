@@ -73,6 +73,7 @@ while True:
     action = np.clip(action, -1., 1.)
 
     next_obs, reward, done, info = env.step(action)
+    next_obs = np.clip(next_obs, -1., 1.)
     transition = [[next_obs], action, reward, done]
     agent_buffer.push_transition(transition)
     next_state = agent_buffer.get_current_state(history_len=C.history_len)[0].ravel()

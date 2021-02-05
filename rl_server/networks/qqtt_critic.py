@@ -28,7 +28,7 @@ def gather_nd_partial(tt, indices, full=True):
     cores = [new_core]
 
     for i in range(1, len(remaining_cores)):
-        cores.append(tf_dynamic_stack(remaining_cores[i]), indices)
+        cores.append(tf_dynamic_stack(remaining_cores[i], indices))
     slice_batch = t3f.TensorTrainBatch(cores)
     if full:
         return t3f.full(slice_batch)
@@ -38,8 +38,10 @@ def gather_nd_partial(tt, indices, full=True):
 
 class QTLayer(Layer):
 
-    def __init__(self, state_shape, tt_shape, partition_size=64, tt_rank=8, **kwargs):
+    def __init__(self, state_shape, action_size, tt_shape, 
+                 partition_size=64, tt_rank=8, **kwargs):
         self.state_shape = state_shape
+        self.action_size = action_size
         self.tt_shape = tt_shape
         self.part_size = partition_size
         self.tt_rank = tt_rank
@@ -57,7 +59,7 @@ class QTLayer(Layer):
         if mode == 'q_sa':
             states, actions = x
             reshaped_s = tf.reshape(states, (-1, np.prod(self.state_shape)))
-            reshaped_a = tf.reshape(actions, (-1, 1))
+            reshaped_a = tf.reshape(actions, (-1, self.action_size))
             input_s_and_a = tf.concat([reshaped_s, reshaped_a], axis=1)
             q_values_sa = t3f.gather_nd(self.Q, input_s_and_a)
             return q_values_sa
@@ -71,6 +73,13 @@ class QTLayer(Layer):
     def compute_output_shape(self, input_shape):
         return input_shape
 
+    
+def tensor_argmax(x):
+    shape = x.get_shape().as_list()
+    reshaped_x = tf.reshape(x, (-1, 32*32))
+    argmax = tf.argmax(reshaped_x, axis=1)
+    argmax = tf.stack([argmax // 32, tf.mod(argmax, 32)])
+    return tf.transpose(argmax, [1,0])
 
 class QQTTCriticNetwork:
 
@@ -99,6 +108,10 @@ class QQTTCriticNetwork:
         self.action_step = (self.action_high - self.action_low) / (self.part_size - 1)
 
         self.model_critic, self.model_actor = self.build_models()
+        
+#    def tensor_argmax(self, x):
+#        reshaped_x = tf.reshape(x, (-1, self.part_size ** self.action_size))
+#        argmax = tf.argmax(reshaped_x, axis=1)
 
     def build_models(self):
 
@@ -114,20 +127,28 @@ class QQTTCriticNetwork:
             states = Lambda(lambda x: self.discretize_states(x))(input_reshaped)
             actions = Lambda(lambda x: self.discretize_actions(x))(input_action)
 
-            tt_shape = (self.part_size, ) * (self.state_shape[1] + 1)
+            tt_shape = (self.part_size, ) * (self.state_shape[1] + self.action_size)
 
-            qt_layer = QTLayer(self.state_shape, tt_shape, self.part_size, self.tt_rank)
+            qt_layer = QTLayer(self.state_shape, self.action_size,
+                               tt_shape, self.part_size, self.tt_rank)
 
             q_values_sa = qt_layer([states, actions], mode='q_sa')
             q_values_s = qt_layer(states, mode='q_s')
+            
+            print (q_values_s, q_values_sa)
 
-            best_actions = Lambda(lambda x: tf.argmax(x, axis=1))(q_values_s)
+            best_actions = Lambda(lambda x: tensor_argmax(x))(q_values_s)
+            
+            print ("BEST", best_actions)
+            
             best_actions_cont = Lambda(lambda x: self.discretize_actions_back(x))(best_actions)
+            
+            
 
             model_critic = keras.models.Model(inputs=[input_state, input_action], outputs=q_values_sa)
             model_actor = keras.models.Model(inputs=[input_state], outputs=best_actions_cont)
-            model_critic.summary()
-            model_actor.summary()
+            #model_critic.summary()
+            #model_actor.summary()
 
         return model_critic, model_actor
 
